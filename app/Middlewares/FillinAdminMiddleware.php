@@ -32,7 +32,7 @@ class FillinAdminMiddleware implements MiddlewareInterface
     {
         $administrator = $this->userLogic->getLoginAdministrator();
 
-        if ($user) {
+        if ($administrator) {
             $view = \Swoft::getBean('view');
             $view->addAttribute('administrator', $administrator);
         }

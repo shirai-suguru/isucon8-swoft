@@ -34,7 +34,6 @@ class AdminLoginRequiredMiddleware implements MiddlewareInterface
     {
         $administrator = $this->userLogic->getLoginAdministrator();
 
-        Log::trace(var_export($administrator, true));
         if (!$administrator) {
             $response = $handler->handle($request);
             $swooleResponse = $response->getSwooleResponse();

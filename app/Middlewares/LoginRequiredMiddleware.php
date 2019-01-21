@@ -9,6 +9,8 @@ use Swoft\Http\Message\Middleware\MiddlewareInterface;
 use Swoft\Bean\Annotation\Inject;
 use Swoft\Log\Log;
 use App\Models\Logic\UserLogic;
+use Swoft\Helper\JsonHelper;
+use Swoft\Http\Message\Server\Response;
 
 /**
  * @Bean()
@@ -31,6 +33,7 @@ class LoginRequiredMiddleware implements MiddlewareInterface
     public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
     {
         $user = $this->userLogic->getLoginUser();
+
 
         if (!$user) {
             $response = $handler->handle($request);

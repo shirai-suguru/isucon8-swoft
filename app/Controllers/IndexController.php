@@ -27,6 +27,7 @@ use App\Middlewares\FillinAdminMiddleware;
 use App\Middlewares\AdminLoginRequiredMiddleware;
 use Swoft\Db\Db;
 use App\Models\Logic\UserLogic;
+use Swoft\Helper\JsonHelper;
 
 /**
  * Class IndexController
@@ -41,9 +42,23 @@ class IndexController
      */
     private $userLogic;
 
+    private function loginRequired(Response $response) : Response
+    {
+        $user = $this->userLogic->getLoginUser();
+
+        if (!$user) {
+            $swooleResponse = $response->getSwooleResponse();
+            $swooleResponse->status(401);
+            $swooleResponse->header('Content-Type', 'application/json');
+            $swooleResponse->write(JsonHelper::encode(['error' => 'login_required']));
+            return $swooleResponse->end();
+        }
+        return $response;
+    }
+
     private function validate_rank($rank)
     {
-        return Db::query('SELECT COUNT(*) FROM sheets WHERE `rank` = ?', [$rank])->getResult();
+        return (int) Db::query('SELECT COUNT(*) AS `CNT` FROM sheets WHERE `rank` = ?', [$rank])->getResult()[0]['CNT'] ?? 0;
     }
 
     private function sanitize_event(array $event): array
@@ -62,25 +77,19 @@ class IndexController
 
     private function get_events(?callable $where = null): array
     {
-        // if (null === $where) {
-        //     $where = function (array $event) {
-        //         return $event['public_fg'];
-        //     };
-        // }
+        if (null === $where) {
+            $where = function (array $event) {
+                return $event['public_fg'];
+            };
+        }
     
         // Db::beginTransaction();
         try {
-            if(null === $where) {
-                $eventList = Events::findAll(['public_fg' => 1], ['orderby' => ['id' => 'ASC']])->getResult()->toArray();
-            } else {
-                $eventList = array_filter($ret = Events::findAll([], ['orderby' => ['id' => 'ASC']])->getResult()->toArray(), $where);
-            }
             $events = [];
             $event_ids = array_map(function (array $event) {
                 return $event['id'];
-            }, $eventList);
-        // }, array_filter(Events::findAll([], ['orderby' => ['id' => 'ASC']])->getResult()->toArray(), $where));
-        
+            }, array_filter(Db::query('SELECT * FROM events ORDER BY id ASC')->getResult(), $where));
+    
             foreach ($event_ids as $event_id) {
                 $event = $this->get_event($event_id);
         
@@ -99,13 +108,13 @@ class IndexController
     }
     private function get_event(int $event_id, ?int $login_user_id = null): array
     {
-        $event = Events::findById($event_id)->getResult();
+        $event = Db::query('SELECT * FROM events WHERE id = ?', [$event_id])->getResult()[0] ?? null;
+
 
         if (!$event) {
             return [];
         }
     
-        $event = $event->toArray();
         $event['id'] = (int) $event['id'];
     
         // zero fill
@@ -117,7 +126,7 @@ class IndexController
             $event['sheets'][$rank]['remains'] = 0;
         }
     
-        $sheets = Sheets::findAll([], ['orderby' => 'rank, num'])->getResult()->toArray();
+        $sheets = Db::query('SELECT * FROM sheets ORDER BY `rank`, num')->getResult();
 
         foreach ($sheets as $sheet) {
             $event['sheets'][$sheet['rank']]['price'] = $event['sheet'][$sheet['rank']]['price'] ?? $event['price'] + $sheet['price'];
@@ -125,10 +134,8 @@ class IndexController
             ++$event['total'];
             ++$event['sheets'][$sheet['rank']]['total'];
     
-            $reservation =  Db::query('SELECT * FROM reservations WHERE event_id = ? AND sheet_id = ? AND canceled_at IS NULL GROUP BY event_id, sheet_id HAVING reserved_at = MIN(reserved_at)', [$event['id'], $sheet['id']])->getResult();
-            // $reservation = Reservations::findAll([['event_id' => $event['id'], 'sheet_id' => $sheet['id'], ['canceled_at', 'IS', 'NULL']], ['groupBy' => ['event_id', 'sheet_id'], 'Having' => ['reserved_at', 'MIN(reserved_at)']]])->getResult()->toArray();
+            $reservation =  Db::query('SELECT * FROM reservations WHERE event_id = ? AND sheet_id = ? AND canceled_at IS NULL GROUP BY event_id, sheet_id HAVING reserved_at = MIN(reserved_at)', [$event['id'], $sheet['id']])->getResult()[0] ?? null;
             if ($reservation) {
-                $reservation = $reservation[0];
                 $sheet['mine'] = $login_user_id && $reservation['user_id'] == $login_user_id;
                 $sheet['reserved'] = true;
                 $sheet['reserved_at'] = (new \DateTime("{$reservation['reserved_at']}", new \DateTimeZone('UTC')))->getTimestamp();
@@ -149,34 +156,35 @@ class IndexController
             array_push($event['sheets'][$rank]['detail'], $sheet);
         }
     
-        $event['public'] = $event['publicFg'] ? true : false;
-        $event['closed'] = $event['closedFg'] ? true : false;
+        $event['public'] = $event['public_fg'] ? true : false;
+        $event['closed'] = $event['closed_fg'] ? true : false;
     
-        unset($event['publicFg']);
-        unset($event['closedFg']);
+        unset($event['public_fg']);
+        unset($event['closed_fg']);
     
         return $event;
     }
     
     /**
      * @RequestMapping("/")
-     * @View(template="index")
      * @Middleware(FillinUserMiddleware::class)
      * @param Request $request
-     * @return array
+     * @return Response
      */
-    public function index(Request $request): array
+    public function index(Request $request): Response
     {
         $view = \Swoft::getBean('view');
 
         $headers = $request->getHeaders();
-        $events = $this->get_events();
-        
-        $baseUrl =  $headers['x-forwarded-proto'][0] ?? 'http' . '://' . $headers['host'][0];
-        return [
+        $events = array_map(function (array $event) {
+            return $this->sanitize_event($event);
+        }, $this->get_events());
+            
+        $baseUrl =  ($headers['x-forwarded-proto'][0] ?? 'http') . '://' . $headers['host'][0];
+        return view('index', [
             'events' => $events,
             'base_url' => $baseUrl,
-        ];
+        ]);
     }
 
     /**
@@ -204,19 +212,17 @@ class IndexController
     
         $user_id = null;
     
+    
+        $duplicated = Db::query('SELECT * FROM users WHERE login_name = ?', [$login_name])->getResult();
+        if ($duplicated) {
+            // Db::rollback();
+
+            return $this->res_error($response, 'duplicated', 409);
+        }
+
         Db::beginTransaction();
-    
         try {
-            $duplicated = Db::query('SELECT * FROM users WHERE login_name = ?', [$login_name])->getResult();
-            Log::trace(var_export($duplicated, true));
-            if ($duplicated) {
-                // Db::rollback();
-                Log::trace('duplicated');
-    
-                return $this->res_error($response, 'duplicated', 409);
-            }
-    
-            Db::query('INSERT INTO users (login_name, pass_hash, nickname) VALUES (?, SHA2(?, 256), ?)', [$login_name, $password, $nickname])->getResult();
+                Db::query('INSERT INTO users (login_name, pass_hash, nickname) VALUES (?, SHA2(?, 256), ?)', [$login_name, $password, $nickname])->getResult();
             $user_id = Db::query('SELECT last_insert_id() as user_id')->getResult()[0]['user_id'];
             Db::commit();
         } catch (\Throwable $throwable) {
@@ -233,7 +239,6 @@ class IndexController
 
     /**
      * @RequestMapping(route="/api/users/{id}", method={RequestMethod::GET})
-     * @Middleware(LoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @param int    $id
@@ -241,6 +246,8 @@ class IndexController
      */
     public function apiUsersById(int $id, Request $request, Response $response): Response
     {
+        $this->loginRequired($response);
+
         $user = Db::query('SELECT id, nickname FROM users WHERE id = ?', [$id])->getResult()[0];
         $user['id'] = (int) $user['id'];
         if (!$user || $user['id'] !== $this->userLogic->getLoginUser()['id']) {
@@ -278,7 +285,7 @@ class IndexController
         };
     
         $user['recent_reservations'] = $recent_reservations($this);
-        $user['total_price'] = Db::query('SELECT IFNULL(SUM(e.price + s.price), 0) FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id WHERE r.user_id = ? AND r.canceled_at IS NULL', [$user['id']])->getResult()[0];
+        $user['total_price'] = Db::query('SELECT IFNULL(SUM(e.price + s.price), 0) AS `total_price` FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id WHERE r.user_id = ? AND r.canceled_at IS NULL', [$user['id']])->getResult()[0]['total_price'];
     
         $recent_events = function () use ($user) {
             $recent_events = [];
@@ -297,7 +304,7 @@ class IndexController
     
         $user['recent_events'] = $recent_events($this);
     
-        return $response->json($user, null, JSON_NUMERIC_CHECK);
+        return $response->json($user, 200, JSON_NUMERIC_CHECK);
     }
 
     /**
@@ -327,13 +334,14 @@ class IndexController
 
     /**
      * @RequestMapping(route="/api/actions/logout", method={RequestMethod::POST})
-     * @Middleware(LoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @return Response
      */
     public function logout(Request $request, Response $response): Response
     {
+        $this->loginRequired($response);
+
         session()->flush();
 
         return $response->withStatus(204);
@@ -366,8 +374,6 @@ class IndexController
         $event_id = $id;
         $user = $this->userLogic->getLoginUser();
         $event = $this->get_event($event_id, $user['id']);
-
-        Log::trace(var_export($event, true));
     
         if (empty($event) || !$event['public']) {
             return $this->res_error($response, 'not_found', 404);
@@ -381,7 +387,6 @@ class IndexController
 
     /**
      * @RequestMapping(route="/api/events/{id}/actions/reserve", method={RequestMethod::POST})
-     * @Middleware(LoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @param int    $id
@@ -389,6 +394,8 @@ class IndexController
      */
     public function apiEventsReserveById(int $id, Request $request, Response $response): Response
     {
+        $this->loginRequired($response);
+
         $event_id = $id;
         $rank = $request->getBodyParams()['sheet_rank'];
     
@@ -436,7 +443,6 @@ class IndexController
 
     /**
      * @RequestMapping(route="/api/events/{id}/sheets/{ranks}/{num}/reservation", method={RequestMethod::DELETE})
-     * @Middleware(LoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @param int    $id
@@ -446,6 +452,8 @@ class IndexController
      */
     public function deletEventByIdRankNum(int $id, string $ranks, int $num, Request $request, Response $response): Response
     {
+        $this->loginRequired($response);
+
         $event_id = $id;
         $rank = $ranks;
         $num = $num;
@@ -466,21 +474,22 @@ class IndexController
             return $this->res_error($response, 'invalid_sheet', 404);
         }
 
+        $reservation = Db::query('SELECT * FROM reservations WHERE event_id = ? AND sheet_id = ? AND canceled_at IS NULL GROUP BY event_id HAVING reserved_at = MIN(reserved_at) FOR UPDATE', [$event['id'], $sheet[0]['id']])->getResult();
+        if (!$reservation) {
+            // Db::rollback();
+
+            return $this->res_error($response, 'not_reserved', 400);
+        }
+
+        if ($reservation[0]['user_id'] != $user['id']) {
+            // Db::rollback();
+
+            return $this->res_error($response, 'not_permitted', 403);
+        }
+
         Db::beginTransaction();
         try {
-            $reservation = Db::query('SELECT * FROM reservations WHERE event_id = ? AND sheet_id = ? AND canceled_at IS NULL GROUP BY event_id HAVING reserved_at = MIN(reserved_at) FOR UPDATE', [$event['id'], $sheet[0]['id']])->getResult();
-            if (!$reservation) {
-                // Db::rollback();
-    
-                return $this->res_error($response, 'not_reserved', 400);
-            }
-    
-            if ($reservation[0]['user_id'] != $user['id']) {
-                // Db::rollback();
-    
-                return $this->res_error($response, 'not_permitted', 403);
-            }
-    
+        
             Db::query('UPDATE reservations SET canceled_at = ? WHERE id = ?', [(new \DateTime('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u'), $reservation[0]['id']])->getResult();
             Db::commit();
         } catch (\Exception $e) {
@@ -495,22 +504,21 @@ class IndexController
 
     /**
      * @RequestMapping("/admin")
-     * @View(template="admin")
      * @Middleware(FillinAdminMiddleware::class)
      * @param Request $request
-     * @return array
+     * @return Response
      */
-    public function admin(Request $request): array
+    public function admin(Request $request): Response
     {
         $headers = $request->getHeaders();
         $events = $this->get_events(function ($event) { return $event; });
 
-        $baseUrl =  $headers['x-forwarded-proto'][0] ?? 'http' . '://' . $headers['host'][0];
+        $baseUrl =  ($headers['x-forwarded-proto'][0] ?? 'http' ) . '://' . $headers['host'][0];
 
-        return [
+        return view('admin', [
             'events' => $events,
             'base_url' => $baseUrl,
-        ];
+        ]);
     }
 
     /**
@@ -743,3 +751,4 @@ class IndexController
         return $swooleResponse->sendFile($tmpfname);
     }
 }
+

@@ -164,7 +164,7 @@
                     <button type="buttom" class="btn btn-primary" v-for="rank in ranks" v-bind:disabled="isSoldOut(rank)" v-on:click.stop.prevent="reserveSheet(rank)">{{ rank }}席 {{ event.sheets[rank].price }}円</button>
                   </div>
                   <button type="button" class="btn btn-secondary" data-dismiss="modal">閉じる</button>
-
+                </div>
               </div>
             </div>
           </div>

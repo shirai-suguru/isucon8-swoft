@@ -25,7 +25,7 @@ class UserLogic
             return false;
         }
 
-        $user = Users::findById($user_id)->getResult()->toArray();
+        $user = Db::query('SELECT id, nickname FROM users WHERE id = ?', [$user_id])->getResult()[0] ?? null;
         $user['id'] = (int) $user['id'];
         return $user;
     }
@@ -37,8 +37,9 @@ class UserLogic
             return false;
         }
 
-        $administrator = Db::query('SELECT id, nickname FROM administrators WHERE id = ?', [$administrator_id])->getResult()[0];
+        $administrator = Db::query('SELECT id, nickname FROM administrators WHERE id = ?', [$administrator_id])->getResult()[0] ?? null;
         $administrator['id'] = (int) $administrator['id'];
         return $administrator;
     }
 }
+
