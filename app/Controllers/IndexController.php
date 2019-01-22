@@ -106,16 +106,29 @@ class IndexController
             $event_ids = array_map(function (array $event) {
                 return $event['id'];
             }, array_filter(Db::query('SELECT * FROM events ORDER BY id ASC')->getResult(), $where));
-    
+
+            $channel = new Channel;
+
             foreach ($event_ids as $event_id) {
-                $event = $this->get_event($event_id);
-        
-                foreach (array_keys($event['sheets']) as $rank) {
-                    unset($event['sheets'][$rank]['detail']);
-                }
-        
-                array_push($events, $event);
+                Coroutine::create(function () use ($event_id, $channel) {
+                // go(function () use ($event_id, $channel) {
+                    
+                    $event = $this->get_event($event_id);
+            
+                    foreach (array_keys($event['sheets']) as $rank) {
+                        unset($event['sheets'][$rank]['detail']);
+                    }
+                    $channel->push($event);
+                    // array_push($events, $event);
+                });
             }
+            foreach ($event_ids as $event_id) {
+                $events[] = $channel->pop();
+            }
+            foreach ($events as $key => $value) {
+                $id[$key] = $value['id'];
+            }
+            array_multisort($id, SORT_ASC, $events);
         } catch (\Throwable $e) {
             // Db::rollback();
         }
