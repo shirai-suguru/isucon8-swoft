@@ -49,7 +49,6 @@ class IndexController
         $administrator = $this->userLogic->getLoginAdministrator();
 
         if (!$administrator) {
-            $response = $handler->handle($request);
             $swooleResponse = $response->getSwooleResponse();
             $swooleResponse->status(401);
             $swooleResponse->header('Content-Type', 'application/json');
