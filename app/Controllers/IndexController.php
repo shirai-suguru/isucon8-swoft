@@ -28,6 +28,8 @@ use App\Middlewares\AdminLoginRequiredMiddleware;
 use Swoft\Db\Db;
 use App\Models\Logic\UserLogic;
 use Swoft\Helper\JsonHelper;
+use Swoole\Coroutine\Channel;
+use Swoft\Core\Coroutine;
 
 /**
  * Class IndexController
@@ -42,7 +44,23 @@ class IndexController
      */
     private $userLogic;
 
-    private function loginRequired(Response $response) : Response
+    private function adminLoginRequired(Response $response)
+    {
+        $administrator = $this->userLogic->getLoginAdministrator();
+
+        if (!$administrator) {
+            $response = $handler->handle($request);
+            $swooleResponse = $response->getSwooleResponse();
+            $swooleResponse->status(401);
+            $swooleResponse->header('Content-Type', 'application/json');
+            $swooleResponse->write(JsonHelper::encode(['error' => 'admin_login_required']));
+            return $swooleResponse->end();
+        }
+
+        return false;
+    }
+
+    private function loginRequired(Response $response)
     {
         $user = $this->userLogic->getLoginUser();
 
@@ -53,7 +71,7 @@ class IndexController
             $swooleResponse->write(JsonHelper::encode(['error' => 'login_required']));
             return $swooleResponse->end();
         }
-        return $response;
+        return false;
     }
 
     private function validate_rank($rank)
@@ -167,13 +185,12 @@ class IndexController
     
     /**
      * @RequestMapping("/")
-     * @Middleware(FillinUserMiddleware::class)
      * @param Request $request
      * @return Response
      */
     public function index(Request $request): Response
     {
-        $view = \Swoft::getBean('view');
+        $user = $this->userLogic->getLoginUser();
 
         $headers = $request->getHeaders();
         $events = array_map(function (array $event) {
@@ -184,6 +201,7 @@ class IndexController
         return view('index', [
             'events' => $events,
             'base_url' => $baseUrl,
+            'user' => $user,
         ]);
     }
 
@@ -246,7 +264,10 @@ class IndexController
      */
     public function apiUsersById(int $id, Request $request, Response $response): Response
     {
-        $this->loginRequired($response);
+        $res = $this->loginRequired($response);
+        if ($res) {
+            return $res;
+        }
 
         $user = Db::query('SELECT id, nickname FROM users WHERE id = ?', [$id])->getResult()[0];
         $user['id'] = (int) $user['id'];
@@ -340,7 +361,10 @@ class IndexController
      */
     public function logout(Request $request, Response $response): Response
     {
-        $this->loginRequired($response);
+        $res = $this->loginRequired($response);
+        if ($res) {
+            return $res;
+        }
 
         session()->flush();
 
@@ -394,7 +418,11 @@ class IndexController
      */
     public function apiEventsReserveById(int $id, Request $request, Response $response): Response
     {
-        $this->loginRequired($response);
+        $res = $this->loginRequired($response);
+
+        if ($res) {
+            return $res;
+        }
 
         $event_id = $id;
         $rank = $request->getBodyParams()['sheet_rank'];
@@ -432,7 +460,7 @@ class IndexController
     
             break;
         }
-    
+
         return $response->json([
             'id' => $reservation_id,
             'sheet_rank' => $rank,
@@ -452,7 +480,10 @@ class IndexController
      */
     public function deletEventByIdRankNum(int $id, string $ranks, int $num, Request $request, Response $response): Response
     {
-        $this->loginRequired($response);
+        $res = $this->loginRequired($response);
+        if ($res) {
+            return $res;
+        }
 
         $event_id = $id;
         $rank = $ranks;
@@ -510,6 +541,8 @@ class IndexController
      */
     public function admin(Request $request): Response
     {
+        $administrator = $this->userLogic->getLoginAdministrator();
+
         $headers = $request->getHeaders();
         $events = $this->get_events(function ($event) { return $event; });
 
@@ -518,6 +551,7 @@ class IndexController
         return view('admin', [
             'events' => $events,
             'base_url' => $baseUrl,
+            'administrator' => $administrator,
         ]);
     }
 
@@ -546,13 +580,17 @@ class IndexController
 
     /**
      * @RequestMapping(route="/admin/api/actions/logout", method={RequestMethod::POST})
-     * @Middleware(AdminLoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @return Response
      */
     public function adminLogout(Request $request, Response $response): Response
     {
+        $res = $this->adminLoginRequired($response);
+        if ($res) {
+            return $res;
+        }
+
         session()->flush();
 
         return $response->withStatus(204);
@@ -560,13 +598,17 @@ class IndexController
 
     /**
      * @RequestMapping(route="/admin/api/events", method={RequestMethod::GET})
-     * @Middleware(AdminLoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @return Response
      */
     public function adminGetEvents(Request $request, Response $response): Response
     {
+        $res = $this->adminLoginRequired($response);
+        if ($res) {
+            return $res;
+        }
+
         $events = $this->get_events(function ($event) { return $event; });
     
         return $response->json($events, 200, JSON_NUMERIC_CHECK);
@@ -574,13 +616,17 @@ class IndexController
 
     /**
      * @RequestMapping(route="/admin/api/events", method={RequestMethod::POST})
-     * @Middleware(AdminLoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @return Response
      */
     public function adminCreateEvents(Request $request, Response $response): Response
     {
+        $res = $this->adminLoginRequired($response);
+        if ($res) {
+            return $res;
+        }
+
         $title = $request->getBodyParams()['title'];
         $public = $request->getBodyParams()['public'] ? 1 : 0;
         $price = $request->getBodyParams()['price'];
@@ -604,7 +650,6 @@ class IndexController
 
     /**
      * @RequestMapping(route="/admin/api/events/{id}", method={RequestMethod::GET})
-     * @Middleware(AdminLoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @param int    $id
@@ -612,6 +657,11 @@ class IndexController
      */
     public function adminGetEventsById(int $id, Request $request, Response $response): Response
     {
+        $res = $this->adminLoginRequired($response);
+        if ($res) {
+            return $res;
+        }
+
         $event_id = $id;
 
         $event = $this->get_event($event_id);
@@ -624,7 +674,6 @@ class IndexController
 
     /**
      * @RequestMapping(route="/admin/api/events/{id}/actions/edit", method={RequestMethod::POST})
-     * @Middleware(AdminLoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @param int    $id
@@ -632,6 +681,11 @@ class IndexController
      */
     public function adminEditEventsById(int $id, Request $request, Response $response): Response
     {
+        $res = $this->adminLoginRequired($response);
+        if ($res) {
+            return $res;
+        }
+
         $event_id = $id;
         $public = $request->getBodyParams()['public'] ? 1 : 0;
         $closed = $request->getBodyParams()['closed'] ? 1 : 0;
@@ -698,13 +752,17 @@ class IndexController
 
     /**
      * @RequestMapping(route="/admin/api/reports/sales", method={RequestMethod::GET})
-     * @Middleware(AdminLoginRequiredMiddleware::class)
      * @param Request $request
      * @param Response $response
      * @return Response
      */
     public function adminGetSales(Request $request, Response $response): Response
     {
+        $res = $this->adminLoginRequired($response);
+        if ($res) {
+            return $res;
+        }
+
         $reports = [];
         $reservations = Db::query('SELECT r.*, s.rank AS sheet_rank, s.num AS sheet_num, s.price AS sheet_price, e.id AS event_id, e.price AS event_price FROM reservations r INNER JOIN sheets s ON s.id = r.sheet_id INNER JOIN events e ON e.id = r.event_id ORDER BY reserved_at ASC FOR UPDATE')->getResult();
         foreach ($reservations as $reservation) {
